@@ -108,7 +108,7 @@ class MemoryIntentService:
             intended=render(metadata,old_body if action in ('update_task','link') else text if text.endswith('\n') else text+'\n')
         return {'source':target['relative_path'],'after_sha256':content_hash(intended),'updates':updates,'metadata':metadata,'text':text,'done':False}
 
-    def apply(self,document,*,_coordinated=False):
+    def apply(self,document,*,_coordinated=False,_refresh_views=True):
         validate_document(document)
         if document['type']!='MemoryWriteIntent':raise WorkspaceError('invalid_schema')
         intent=document['data'];context=self._context(intent)
@@ -158,7 +158,32 @@ class MemoryIntentService:
                 runs=WorkflowRunner(self.runtime).dispatch(envelope('RequestContext',context['request']),[c['target']['record_id'] for c in intent['changes'] if c['action'] not in ('skip','review')])
                 workflow_issues=[{'code':'workflow_'+r['data']['status'],'detail':r['data']['run_id']} for r in runs if r['data']['status']!='completed']
             except (ValueError,OSError):workflow_issues=[{'code':'workflow_dispatch_pending'}]
-        return envelope('OperationResult',{'operation_id':intent['intent_id'],'operation_status':'replayed' if replay else 'applied',
+        result=envelope('OperationResult',{'operation_id':intent['intent_id'],'operation_status':'replayed' if replay else 'applied',
             'workspace_health':'verification_pending','parts':parts,'capabilities':[{'name':'canonical_update','state':'ready'}],
             'verification':[{'check':'source_index_readback','state':'passed','evidence_refs':[]}],
             'issues':workflow_issues,'next_action':'Verify retrieval in a fresh process/client; this receipt does not certify all workspace capabilities.'})
+        if _refresh_views:
+            result=self._refresh_views(document,result,_coordinated=_coordinated)
+        return result
+
+    def _refresh_views(self,document,result,*,_coordinated):
+        # Canonical source/index readback has already succeeded. A view failure
+        # cannot turn that success into an apparent rollback or erase its parts.
+        try:
+            from beyin_v3_workspace_views import refresh_after_apply
+            refreshed=refresh_after_apply(self.runtime,document,copy.deepcopy(result),_coordinated=_coordinated)
+            validate_document(refreshed)
+            original=result['data'];data=refreshed['data']
+            if (refreshed['type']!='OperationResult' or data['operation_id']!=original['operation_id']
+                    or data['operation_status']!=original['operation_status'] or data['parts']!=original['parts']
+                    or any(check not in data['verification'] for check in original['verification'])):
+                raise ValueError('view_result_must_preserve_canonical_write')
+            return refreshed
+        except Exception:
+            # Never include the callback exception: it may contain source text,
+            # paths or parser details. The previous view remains a separate concern.
+            stale=copy.deepcopy(result);data=stale['data']
+            data['workspace_health']='verification_pending'
+            data['issues'].append({'code':'managed_view_stale','detail':'Canonical changes succeeded; the managed view could not be refreshed.'})
+            data['next_action']='Canonical changes are saved. Inspect the managed view and retry its authorized refresh; verify retrieval in a fresh session.'
+            return stale

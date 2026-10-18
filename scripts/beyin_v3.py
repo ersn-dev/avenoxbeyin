@@ -847,6 +847,9 @@ def parser():
     builder = sub.add_parser('workspace-builder', help='Plan, preview and execute approved workspace configuration')
     builder.add_argument('action', choices=('plan','preview','apply','recover','revert'))
     builder.add_argument('--file', default='-', help='Agent-prepared JSON input or - for stdin')
+    setup = sub.add_parser('workspace-setup', help='Catalog sources, prepare a compact workspace plan, or organize an approved view')
+    setup.add_argument('action', choices=('catalog', 'prepare', 'organize'))
+    setup.add_argument('--file', default='-', help='Compact agent-prepared setup JSON or - for stdin')
     authority = sub.add_parser('workspace-authority', help='Record explicit trusted-agent source/plan/revert authority or revoke it')
     authority.add_argument('action', choices=('grant','approve-plan','approve-revert','revoke'))
     authority.add_argument('--file', default='-', help='Bounded JSON with explicit human evidence, or - for stdin')
@@ -937,7 +940,8 @@ def workspace_failure(exc, operation='workspace-operation'):
         roots = 'notes/ or knowledge/' if code == 'invalid_create_note_target' else 'tasks/'
         issue['detail'] = 'The canonical create writer requires a Markdown target under ' + roots + '.'
         next_action = ('Choose an approved .md target under ' + roots +
-                       '; obtain a fresh context and approval if scope changes. The whole intent was rejected before source writes.')
+                       '; obtain a fresh context and approval if scope changes. ' +
+                       ('The whole intent was rejected before source writes.' if parts else 'Inspect the journal before retrying; previous source changes may exist.'))
     else:
         next_action = ('Verify explicit source scope and user authority before retrying.' if denied else
                        'Read the current context and pending journal; recover or revert the existing operation before retrying.' if conflict else
@@ -976,6 +980,8 @@ def workspace_builder_cli(args,return_result=False):
         from beyin_v3_builder import execute,_failure
         if args.command=='workspace-authority':
             from beyin_v3_workspaces import execute_authority as execute
+        elif args.command=='workspace-setup':
+            from beyin_v3_workspace_setup import execute
         vault=args.vault.expanduser().resolve()
         if not vault.is_dir():raise ValueError('invalid_builder_request')
         state=(args.state.expanduser() if args.state else default_state(vault)).resolve()
@@ -984,7 +990,7 @@ def workspace_builder_cli(args,return_result=False):
     except Exception as exc:
         try:
             from beyin_v3_builder import _failure
-            result,code=_failure(exc)
+            result,code=(workspace_failure(exc,args.command) if args.command=='workspace-setup' else _failure(exc))
             result['data']['operation_id']=args.command
             if getattr(exc,'code',None) in ('document_too_large','document_too_deep'):code=2
         except ImportError:
@@ -1003,7 +1009,7 @@ def main(argv=None, return_result=False):
     argument_parser = parser()
     args = argument_parser.parse_args(argv)
     if args.command=='workspace':return workspace_metadata_cli(args,return_result)
-    if args.command in ('workspace-builder','workspace-authority'):return workspace_builder_cli(args,return_result)
+    if args.command in ('workspace-builder','workspace-authority','workspace-setup'):return workspace_builder_cli(args,return_result)
     receipt_flags = args.command == "receipt" and any(
         getattr(args, name) is not None for name in ("event_id", "summary", "summary_file", "ref", "link", "session"))
     if receipt_flags:
@@ -1618,10 +1624,12 @@ def main(argv=None, return_result=False):
             result = sync.update_task(payload["id"], payload["expected_revision"], payload["changes"])
         if args.command in SOURCE_WRITE_COMMANDS or (args.command=='workspace-write' and result.get('data',{}).get('operation_status')=='applied'):
             mark_session_edit(state)
+        view_stale=(args.command=='workspace-write' and any(issue.get('code')=='managed_view_stale' for issue in result.get('data',{}).get('issues',[]))) or (args.command=='workspace-workflow' and (result.get('data',{}).get('next_action') or '').startswith('managed_view_stale:'))
+        exit_code=5 if view_stale else 0
         if return_result:
-            return result, 0
+            return result, exit_code
         print(json.dumps(result, ensure_ascii=True, indent=2))
-        return 0
+        return exit_code
     except Exception as exc:
         if args.command in ('workspace-context','workspace-write','workspace-workflow'):
             error,exit_code=workspace_failure(exc)

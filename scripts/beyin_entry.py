@@ -184,6 +184,21 @@ def human_result(result, command, installed_version=None):
         if data['truncated']:
             lines.append('Gosterilen: ' + str(len(data['workspaces'])) + '/' + str(data['total']) + '; --limit ile genislet.')
         return '\n'.join(lines)
+    if command == 'workspace-setup' and result.get('contract_version') == 'workspace/0.1.0':
+        for issue in result['data'].get('issues', []):
+            if issue.get('code') != 'setup_artifacts':
+                continue
+            try:
+                artifacts = json.loads(issue['detail'])
+            except (ValueError, KeyError, TypeError):
+                break
+            preview = artifacts.get('preview') if isinstance(artifacts, dict) else None
+            if isinstance(preview, dict) and isinstance(preview.get('text'), str):
+                return '\n'.join(plain_text(line) for line in preview['text'].splitlines())
+            if isinstance(artifacts, dict) and isinstance(artifacts.get('catalog'), list):
+                return ('Kaynak katalogu: ' + str(len(artifacts['catalog'])) + ' kayit.' +
+                        (' Sinira ulasildi; daha dar kokler sec.' if artifacts.get('truncated') else '') +
+                        (' ' + plain_text(result['data']['next_action']) if result['data'].get('next_action') else ''))
     if result.get('contract_version')=='workspace/0.1.0':
         data=result['data']
         if result['type']=='WorkContext':

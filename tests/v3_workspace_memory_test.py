@@ -111,6 +111,36 @@ class WorkspaceMemoryTest(unittest.TestCase):
         updated=next(r for r in self.runtime.context(self.request)['data']['records'] if r['id']=='academic-task')
         self.assertEqual(updated['revision'],record['revision']+1)
 
+    def test_canonical_refresh_preserves_success_if_view_helper_fails(self):
+        import types
+        module=types.ModuleType('beyin_v3_workspace_views')
+        def failed(runtime,document,result,*,_coordinated=False):
+            result['data']['parts']=[]  # A mutating failed helper cannot erase evidence.
+            raise ValueError('PRIVATE_VIEW_PATH')
+        module.refresh_after_apply=failed
+        with patch.dict(sys.modules,{'beyin_v3_workspace_views':module}):
+            result=self.service.apply(self.intent)['data']
+        self.assertEqual(result['operation_status'],'applied')
+        self.assertTrue(result['parts']);self.assertTrue(all(p['state']=='verified' for p in result['parts']))
+        self.assertEqual(result['verification'][0]['state'],'passed')
+        self.assertIn('managed_view_stale',[issue['code'] for issue in result['issues']])
+        self.assertNotIn('PRIVATE',json.dumps(result))
+
+    def test_shared_callback_carries_existing_lock_and_can_be_opted_out(self):
+        import types
+        from unittest.mock import Mock
+        module=types.ModuleType('beyin_v3_workspace_views')
+        module.refresh_after_apply=Mock(side_effect=lambda runtime,document,result,**kwargs:result)
+        with patch.dict(sys.modules,{'beyin_v3_workspace_views':module}):
+            with self.runtime.registry.coordinated():
+                result=self.service.apply(self.intent,_coordinated=True)
+            module.refresh_after_apply.assert_called_once()
+            self.assertTrue(module.refresh_after_apply.call_args.kwargs['_coordinated'])
+            module.refresh_after_apply.reset_mock()
+            self.service.apply(self.intent,_refresh_views=False)
+            module.refresh_after_apply.assert_not_called()
+        self.assertEqual(result['data']['operation_status'],'applied')
+
     def test_crash_after_writer_before_checkpoint_resumes_without_duplication(self):
         def fail(phase,index=None):
             if phase=='writer_returned' and index==0:raise RuntimeError('synthetic crash')

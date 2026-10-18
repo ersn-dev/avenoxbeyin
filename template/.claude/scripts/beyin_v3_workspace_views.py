@@ -150,15 +150,12 @@ def refresh_after_apply(runtime, intent_document, operation_result, *, _coordina
         if refreshed['data']['operation_status'] not in ('applied', 'replayed') or any(
                 p['state'] not in ('verified', 'skipped') for p in refreshed['data']['parts']):
             raise WorkspaceError('managed_view_verification_pending')
-        result['data']['parts'] = [p for p in result['data']['parts'] if p['id'] != 'managed-homepage']
-        result['data']['parts'].append({'id': 'managed-homepage', 'state': 'verified'})
         result['data']['issues'] = [i for i in result['data']['issues'] if i['code'] != 'managed_view_stale']
         result['data']['issues'].extend(refreshed['data']['issues'])
     except (ValueError, OSError, KeyError, TypeError):
-        result['data']['parts'] = [p for p in result['data']['parts'] if p['id'] != 'managed-homepage']
-        result['data']['parts'].append({'id': 'managed-homepage', 'state': 'failed'})
         result['data']['issues'].append({'code': 'managed_view_stale',
             'detail': 'Canonical write succeeded; Markdown refresh is unverified. Inspect its journal and refresh with a fresh authorized context.'})
+        result['data']['next_action'] = 'Inspect the view refresh journal and retry with a fresh authorized context.'
     result['data']['workspace_health'] = 'verification_pending'
     validate_document(result)
     return result

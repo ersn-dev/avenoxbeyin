@@ -91,9 +91,12 @@ class SetupTest(unittest.TestCase):
                 target=dict(record_id='item', source_id=source_id, relative_path='notes/workspaces/item.md', expected_revision=None, expected_source_sha256=None),
                 body='Kayıt gövdesi', metadata_changes={'title': 'Örnek iş'}, relation_changes=[], evidence_refs=[])]))
         result = MemoryIntentService(runtime).apply(intent)
+        canonical_parts = copy.deepcopy(result['data']['parts'])
         # Also works when central apply already refreshed; explicit replay is safe.
         refreshed = refresh_after_apply(runtime, intent, result)
         self.assertNotIn('managed_view_stale', [i['code'] for i in refreshed['data']['issues']])
+        self.assertEqual(refreshed['data']['parts'], canonical_parts)
+        self.assertEqual(result['data']['parts'], canonical_parts)
         page = self.vault / data['homepage']; self.assertTrue(page.is_file())
         self.assertIn('[Örnek iş](item.md)', page.read_text())
         before = page.read_bytes()
@@ -128,6 +131,8 @@ class SetupTest(unittest.TestCase):
         authority.revoke('setup-review')
         denied = refresh_after_apply(runtime, intent, result)
         self.assertIn('managed_view_stale', [i['code'] for i in denied['data']['issues']])
+        self.assertEqual(denied['data']['parts'], canonical_parts)
+        self.assertEqual(result['data']['parts'], canonical_parts)
         self.assertEqual(page.read_bytes(), before)
 
     def test_marker_conflict_and_exact_outside_body_preservation(self):

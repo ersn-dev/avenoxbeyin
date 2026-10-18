@@ -205,7 +205,12 @@ def human_result(result, command, installed_version=None):
             return 'Calisma baglami: '+str(data['state'])+'; '+str(len(data['records']))+' kaynak/kayit.'
         if result['type']=='WorkflowRun':
             return 'Surec: '+str(data['status'])+('. '+data['next_action'] if data.get('next_action') else '')
-        return 'Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])+('. '+data['next_action'] if data.get('next_action') else '')
+        line='Islem: '+str(data['operation_status'])+'; alan durumu: '+str(data['workspace_health'])
+        codes=[plain_text(issue['code']) for issue in data.get('issues',[]) if issue.get('code')!='setup_artifacts']
+        failed=[plain_text(part['id']) for part in data.get('parts',[]) if part['state'] in ('failed','conflict')]
+        if codes:line+='; kod: '+', '.join(codes)
+        if failed:line+='; hedef degisiklik: '+', '.join(failed)
+        return line+('. '+plain_text(data['next_action']) if data.get('next_action') else '')
     if command=='workspace-builder':
         preview=result.get('preview',result)
         if isinstance(preview,dict) and isinstance(preview.get('text'),str):

@@ -32,6 +32,15 @@ class WorkspaceSetupCliTest(unittest.TestCase):
                     module.execute.assert_called_with(vault,state,action,{'compact':'PRIVATE_REQUEST'})
             self.assertFalse(state.exists());self.assertEqual(list(vault.iterdir()),[])
 
+    def test_human_preflight_error_displays_code_and_change_target(self):
+        spec=importlib.util.spec_from_file_location('workspace_failure_entry',ROOT/'scripts/beyin_entry.py')
+        entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
+        from beyin_v3_workspace_memory import CanonicalTargetError
+        result,_=load_cli().workspace_failure(CanonicalTargetError('invalid_create_note_target','invalid-note'))
+        line=entry.human_result(result,'workspace-write')
+        self.assertIn('invalid_create_note_target',line);self.assertIn('invalid-note',line)
+        self.assertIn('notes/',line)
+
     def test_human_prepare_displays_existing_preview_and_sanitizes_controls(self):
         spec=importlib.util.spec_from_file_location('workspace_setup_entry',ROOT/'scripts/beyin_entry.py')
         entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)

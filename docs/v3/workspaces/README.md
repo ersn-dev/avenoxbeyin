@@ -17,3 +17,11 @@ Sözleşmenin alan, yetki veya hata anlamı değişirse sürümlü fark hazırla
 - [Kurulum ve konuşmalı yönetim](../WORKSPACE-BUILDER.md)
 - [Sentetik kullanım senaryoları](../WORKSPACE-BUILDER-CONVERSATIONS.md)
 - [OCR önkoşulları](../WORKSPACE-BUILDER-OCR.md)
+
+## Markdown görünümünün tasarım sınırları
+
+[#397](https://github.com/avenoxai/avenoxbeyin/issues/397) için teknik profil JSON'da kalır. Basit alan tek Markdown sayfası, gerektiğinde klasör kullanır; mevcut proje ana sayfaları yerinde değerlendirilebilir. Kaynaklar taşınmaz.
+
+Onaylı kanonik değişiklik başarılı olunca yalnız yönetilen bloklar yenilenir. Blok dışındaki kullanıcı içeriği korunur. Yenileme hatasında eski görünüm korunur ve güncel olmadığı belirtilir. Dataview/Bases zorunlu değildir. Bu görünüm ve otomatik yenileme henüz tamamlanmamıştır.
+
+Global ve proje Kurallar.md dosyaları korunur; workspace kuralları profilin working_rules alanında yer alır. Davranış kurallarında proje, workspace ve global kapsam sırası uygulanır. Erişim ve onay sınırları bu sırayla gevşetilemez.

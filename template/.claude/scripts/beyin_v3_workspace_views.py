@@ -138,9 +138,13 @@ def refresh_after_apply(runtime, intent_document, operation_result, *, _coordina
         if any(c['target']['relative_path'] == homepage for c in intent['changes']):
             return result
         refreshed = organize(runtime, intent_document, 'view:' + intent['idempotency_key'], _coordinated=_coordinated)
+        result['data']['parts'] = [p for p in result['data']['parts'] if p['id'] != 'managed-homepage']
         result['data']['parts'].append({'id': 'managed-homepage', 'state': 'verified'})
+        result['data']['issues'] = [i for i in result['data']['issues'] if i['code'] != 'managed_view_stale']
         result['data']['issues'].extend(refreshed['data']['issues'])
     except (ValueError, OSError, KeyError, TypeError):
+        result['data']['parts'] = [p for p in result['data']['parts'] if p['id'] != 'managed-homepage']
+        result['data']['parts'].append({'id': 'managed-homepage', 'state': 'failed'})
         result['data']['issues'].append({'code': 'managed_view_stale',
             'detail': 'Canonical write succeeded; Markdown refresh is unverified. Inspect its journal and refresh with a fresh authorized context.'})
     result['data']['workspace_health'] = 'verification_pending'

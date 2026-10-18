@@ -141,6 +141,51 @@ class WorkspaceMemoryTest(unittest.TestCase):
             module.refresh_after_apply.assert_not_called()
         self.assertEqual(result['data']['operation_status'],'applied')
 
+    def test_internal_view_mode_preserves_crlf_and_missing_final_lf_through_readback(self):
+        from beyin_v3_sync import parse,render
+        path=self.runtime.registry.vault/'notes/academic-learning.md'
+        metadata,_=parse(path.read_bytes().decode('utf-8'))
+        before_body='Kullanıcı üst satırı\r\n<!-- beyin-workspace:academic:start -->\r\nEski görünüm\r\n<!-- beyin-workspace:academic:end -->\r\nSon kullanıcı satırı'
+        path.write_bytes(render(metadata,before_body).encode('utf-8'))
+        self.service.engine.sync()
+        context=self.runtime.context(self.request)['data']
+        record=next(r for r in context['records'] if r['id']=='academic-learning')
+        intent=copy.deepcopy(self.intent);change=copy.deepcopy(intent['data']['changes'][0])
+        change.update(body=before_body.replace('Eski görünüm','Yeni görünüm'),metadata_changes={},relation_changes=[])
+        change['target'].update(expected_revision=record['revision'],expected_source_sha256=record['source_ref']['content_sha256'])
+        intent['data'].update(changes=[change],context_token=context['context_token'],binding_snapshot_sha256=context['binding_snapshot_sha256'])
+        result=self.service.apply(intent,_refresh_views=False,_preserve_body=True)['data']
+        self.assertEqual(result['operation_status'],'applied')
+        self.assertEqual(parse(path.read_bytes().decode('utf-8'))[1],change['body'])
+        self.assertFalse(path.read_bytes().endswith(b'\n'))
+        self.assertEqual(self.service.apply(intent,_refresh_views=False,_preserve_body=True)['data']['operation_status'],'replayed')
+        with self.assertRaisesRegex(WorkspaceError,'idempotency_collision'):
+            self.service.apply(intent,_refresh_views=False)
+
+    def test_default_update_still_appends_final_lf(self):
+        from beyin_v3_sync import parse
+        intent=copy.deepcopy(self.intent);change=intent['data']['changes'][0]
+        change.update(body='Ordinary note without final LF',metadata_changes={},relation_changes=[])
+        intent['data']['changes']=[change]
+        self.service.apply(intent,_refresh_views=False)
+        path=self.runtime.registry.vault/change['target']['relative_path']
+        self.assertEqual(parse(path.read_bytes().decode('utf-8'))[1],change['body']+'\n')
+
+    def test_preserve_body_does_not_bypass_protection_or_frontmatter_validation(self):
+        from beyin_v3_sync import parse
+        intent=copy.deepcopy(self.intent);change=intent['data']['changes'][0]
+        change.update(body='Body requiring protection review',metadata_changes={},relation_changes=[])
+        intent['data']['changes']=[change]
+        path=self.runtime.registry.vault/change['target']['relative_path'];before=path.read_bytes()
+        with patch.object(self.service.engine,'_protect',return_value=('Protected replacement',1)):
+            with self.assertRaisesRegex(WorkspaceError,'managed_view_body_requires_review'):
+                self.service.apply(intent,_refresh_views=False,_preserve_body=True)
+        self.assertEqual(path.read_bytes(),before)
+        change['body']='---\n{"kind":"task"}\n---\nInjected header'
+        with self.assertRaisesRegex(ValueError,'invalid note update'):
+            self.service.apply(intent,_refresh_views=False,_preserve_body=True)
+        self.assertEqual(path.read_bytes(),before)
+
     def test_crash_after_writer_before_checkpoint_resumes_without_duplication(self):
         def fail(phase,index=None):
             if phase=='writer_returned' and index==0:raise RuntimeError('synthetic crash')

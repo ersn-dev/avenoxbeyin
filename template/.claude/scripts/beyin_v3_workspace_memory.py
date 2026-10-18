@@ -77,13 +77,15 @@ class MemoryIntentService:
             updates['workspace_relations']=list(relations.values())
         return updates
 
-    def _prepare(self,change,context):
+    def _prepare(self,change,context,*,_preserve_body=False):
         target=change['target'];action=change['action']
         path,_,_=self.runtime.resolver.resolve(context['workspace_id'],target['source_id'],target['relative_path'],context['request']['grant_ref'],access='write_memory')
         actual=content_hash(path.read_bytes()) if path.exists() else None
         if actual!=target['expected_source_sha256']:raise WorkspaceError('revision_conflict')
         updates=self._changes(change,context);updates,_=self.engine._protect_metadata(updates)
         text,_=self.engine._protect(change['body'])
+        if _preserve_body and action=='update_note' and text!=change['body']:
+            raise WorkspaceError('managed_view_body_requires_review')
         if action.startswith('create_'):
             current=self.engine.store._records()
             if any(r['id']==target['record_id'] for r in current):raise WorkspaceError('record_exists')
@@ -103,12 +105,13 @@ class MemoryIntentService:
             if not record or record['revision']!=target['expected_revision'] or record['source']!=target['relative_path']:
                 raise WorkspaceError('revision_conflict')
             if (record.get('visibility')=='private' and context['request']['audience']!='private') or record.get('trust')=='untrusted':raise WorkspaceError('scope_denied')
-            metadata,old_body=parse(path.read_text(encoding='utf-8'))
+            metadata,old_body=parse(path.read_bytes().decode('utf-8') if _preserve_body and action=='update_note' else path.read_text(encoding='utf-8'))
             metadata.update(updates);metadata['revision']=target['expected_revision']+1
-            intended=render(metadata,old_body if action in ('update_task','link') else text if text.endswith('\n') else text+'\n')
+            intended=render(metadata,old_body if action in ('update_task','link') else text if (_preserve_body or text.endswith('\n')) else text+'\n')
         return {'source':target['relative_path'],'after_sha256':content_hash(intended),'updates':updates,'metadata':metadata,'text':text,'done':False}
 
-    def apply(self,document,*,_coordinated=False,_refresh_views=True):
+    def apply(self,document,*,_coordinated=False,_refresh_views=True,_preserve_body=False):
+        if type(_preserve_body) is not bool:raise WorkspaceError('invalid_body_mode')
         validate_document(document)
         if document['type']!='MemoryWriteIntent':raise WorkspaceError('invalid_schema')
         intent=document['data'];context=self._context(intent)
@@ -124,10 +127,10 @@ class MemoryIntentService:
                     self.runtime.resolver.read(evidence,context['workspace_id'],context['request']['grant_ref'],audience=context['request']['audience'])
             if journal_path.exists():
                 journal=parse_document(journal_path.read_bytes())
-                if journal['payload_sha256']!=payload_hash:raise WorkspaceError('idempotency_collision')
+                if journal['payload_sha256']!=payload_hash or journal.get('preserve_body',False)!=_preserve_body:raise WorkspaceError('idempotency_collision')
                 replay=all(p.get('done') for p in journal['parts'])
             else:
-                journal={'payload_sha256':payload_hash,'parts':[{'skip':c['action'],'done':True} if c['action'] in ('skip','review') else self._prepare(c,context) for c in intent['changes']]}
+                journal={'payload_sha256':payload_hash,'preserve_body':_preserve_body,'parts':[{'skip':c['action'],'done':True} if c['action'] in ('skip','review') else self._prepare(c,context,_preserve_body=_preserve_body) for c in intent['changes']]}
                 atomic(journal_path,json.dumps(journal,ensure_ascii=False,allow_nan=False));transaction_hook('prepared')
             for index,(change,part) in enumerate(zip(intent['changes'],journal['parts'])):
                 if 'skip' in part:parts.append({'id':change['id'],'state':'skipped'});continue
@@ -136,7 +139,7 @@ class MemoryIntentService:
                 if actual!=part['after_sha256']:
                     if part['done'] or actual!=change['target']['expected_source_sha256']:raise WorkspaceError('revision_conflict')
                     action=change['action'];target=change['target'];transaction_hook('before_writer',index)
-                    if action=='update_note':self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],part['text'],part['updates'])
+                    if action=='update_note':self.engine.update_note(target['record_id'],target['expected_revision'],target['expected_source_sha256'],part['text'],part['updates'],_preserve_body=_preserve_body)
                     elif action=='update_task':self.engine.update_task(target['record_id'],target['expected_revision'],part['updates'])
                     elif action=='create_note':self.engine.note_create(part['source'],part['text'],part['metadata'])
                     elif action=='create_task':self.engine.task_create(part['source'],part['text'],part['metadata'])

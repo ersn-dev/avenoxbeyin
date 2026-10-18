@@ -155,7 +155,9 @@ class MemoryIntentService:
                 part['done']=True;atomic(journal_path,json.dumps(journal,ensure_ascii=False,allow_nan=False));transaction_hook('checkpoint',index)
                 parts.append({'id':change['id'],'state':'verified'})
         workflow_issues=[]
-        if not _coordinated:
+        # Private derived-view writes disable both recursive refresh and workflow
+        # redispatch. Ordinary canonical writes still dispatch once as before.
+        if not _coordinated and _refresh_views:
             from beyin_v3_workspace_workflow import WorkflowRunner
             try:
                 runs=WorkflowRunner(self.runtime).dispatch(envelope('RequestContext',context['request']),[c['target']['record_id'] for c in intent['changes'] if c['action'] not in ('skip','review')])

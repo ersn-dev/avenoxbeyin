@@ -186,6 +186,24 @@ class WorkspaceMemoryTest(unittest.TestCase):
             self.service.apply(intent,_refresh_views=False,_preserve_body=True)
         self.assertEqual(path.read_bytes(),before)
 
+    def test_original_write_dispatches_once_and_derived_view_does_not_redispatch(self):
+        import types
+        module=types.ModuleType('beyin_v3_workspace_views')
+        def refresh(runtime,document,result,*,_coordinated=False):
+            derived=copy.deepcopy(document);change=copy.deepcopy(derived['data']['changes'][0])
+            change.update(id='derived-view',action='create_note',body='Distinct derived homepage body',metadata_changes={},relation_changes=[])
+            change['target'].update(record_id='derived-homepage',relative_path='notes/derived-homepage.md',expected_revision=None,expected_source_sha256=None)
+            derived['data'].update(intent_id='derived-view',idempotency_key='derived-view',changes=[change])
+            MemoryIntentService(runtime).apply(derived,_coordinated=_coordinated,_refresh_views=False,_preserve_body=True)
+            return result
+        module.refresh_after_apply=refresh
+        with patch.dict(sys.modules,{'beyin_v3_workspace_views':module}),patch('beyin_v3_workspace_workflow.WorkflowRunner.dispatch',return_value=[]) as dispatch:
+            result=self.service.apply(self.intent)
+        self.assertEqual(result['data']['operation_status'],'applied');dispatch.assert_called_once()
+        self.assertEqual(dispatch.call_args.args[1],[c['target']['record_id'] for c in self.intent['data']['changes']])
+        self.assertTrue((self.runtime.registry.vault/'notes/derived-homepage.md').exists())
+        self.assertNotIn('managed_view_stale',[issue['code'] for issue in result['data']['issues']])
+
     def test_crash_after_writer_before_checkpoint_resumes_without_duplication(self):
         def fail(phase,index=None):
             if phase=='writer_returned' and index==0:raise RuntimeError('synthetic crash')

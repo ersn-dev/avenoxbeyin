@@ -63,6 +63,54 @@ class WorkspaceMemoryTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkspaceError,'scope_denied'):self.service.apply(self.intent)
         self.assertEqual({p:p.read_bytes() for p in before},before)
 
+    def test_mixed_intent_invalid_new_note_rejects_before_any_source_write(self):
+        from beyin_v3_workspaces import envelope
+        vault=self.runtime.registry.vault;state=self.runtime.registry.state
+        profile=copy.deepcopy(self.spec['desired_profile']);profile['revision']+=1
+        profile['note_roots'].append('workspaces')
+        path=vault/'.beyin-workspaces/workspaces/academic.json'
+        self.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(path.read_bytes()))
+        context=self.runtime.context(self.request)['data']
+        intent=copy.deepcopy(self.intent)
+        intent['data'].update(context_token=context['context_token'],profile_revision=profile['revision'],
+                              binding_snapshot_sha256=context['binding_snapshot_sha256'])
+        invalid=copy.deepcopy(intent['data']['changes'][0])
+        invalid.update(id='invalid-note',action='create_note',body='Distinct new workspace note',metadata_changes={},relation_changes=[])
+        invalid['target'].update(record_id='new-workspace-note',relative_path='workspaces/academic.md',expected_revision=None,expected_source_sha256=None)
+        intent['data']['changes'].append(invalid)
+        before={p:p.read_bytes() for p in vault.rglob('*.md')}
+        with patch.object(self.service.engine,'update_note') as writer,self.assertRaisesRegex(WorkspaceError,'invalid_create_note_target') as raised:
+            self.service.apply(intent)
+        writer.assert_not_called();self.assertEqual(raised.exception.change_id,'invalid-note')
+        self.assertEqual(before,{p:p.read_bytes() for p in vault.rglob('*.md')})
+        journal=state/'workspace-write-intents'/(content_hash(intent['data']['idempotency_key'])+'.json')
+        self.assertFalse(journal.exists())
+
+    def test_existing_task_outside_tasks_keeps_adoption_and_update_path(self):
+        from beyin_v3_workspaces import envelope
+        vault=self.runtime.registry.vault
+        old=vault/'tasks/academic-task.md';new=vault/'projects/legacy-task.md'
+        new.parent.mkdir();old.rename(new)
+        profile=copy.deepcopy(self.spec['desired_profile']);profile['revision']+=1
+        profile['note_roots'].append('projects')
+        path=vault/'.beyin-workspaces/workspaces/academic.json'
+        self.runtime.registry.compare_and_save(envelope('WorkspaceProfile',profile),content_hash(path.read_bytes()))
+        self.service.engine.sync()
+        adopted=copy.deepcopy(self.spec);adopted['desired_profile']=profile
+        self.runtime.adopt(envelope('WorkspaceSpec',adopted))
+        context=self.runtime.context(self.request)['data']
+        record=next(r for r in context['records'] if r['id']=='academic-task')
+        intent=copy.deepcopy(self.intent)
+        change=next(c for c in intent['data']['changes'] if c['action']=='update_task')
+        change['target'].update(relative_path='projects/legacy-task.md',expected_revision=record['revision'],
+                                expected_source_sha256=record['source_ref']['content_sha256'])
+        intent['data'].update(changes=[change],context_token=context['context_token'],profile_revision=profile['revision'],
+                              binding_snapshot_sha256=context['binding_snapshot_sha256'])
+        result=self.service.apply(intent)['data']
+        self.assertEqual(result['operation_status'],'applied');self.assertTrue(new.exists());self.assertFalse(old.exists())
+        updated=next(r for r in self.runtime.context(self.request)['data']['records'] if r['id']=='academic-task')
+        self.assertEqual(updated['revision'],record['revision']+1)
+
     def test_crash_after_writer_before_checkpoint_resumes_without_duplication(self):
         def fail(phase,index=None):
             if phase=='writer_returned' and index==0:raise RuntimeError('synthetic crash')

@@ -169,6 +169,21 @@ def rewrite_note(entry):
 
 
 def human_result(result, command, installed_version=None):
+    if 'workspace_metadata' in result:
+        data = result['workspace_metadata']
+        lines = []
+        for item in data['workspaces']:
+            lines.append(plain_text(item['id']) + ' · ' + plain_text(item['name']) +
+                         ' · ' + plain_text(item['lifecycle']) + ' · r' + str(item['revision']) +
+                         ' · ' + str(item['source_count']) + ' kaynak')
+            if data['action'] == 'inspect':
+                lines.append('Not kokleri: ' + ', '.join(plain_text(root) for root in item['note_roots']))
+                lines.append('Kural: ' + str(item['working_rule_count']) + '; surec: ' + str(item['workflow_count']))
+        if not lines:
+            lines.append('Kayitli workspace yok.')
+        if data['truncated']:
+            lines.append('Gosterilen: ' + str(len(data['workspaces'])) + '/' + str(data['total']) + '; --limit ile genislet.')
+        return '\n'.join(lines)
     if result.get('contract_version')=='workspace/0.1.0':
         data=result['data']
         if result['type']=='WorkContext':

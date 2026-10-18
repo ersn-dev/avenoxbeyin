@@ -13,6 +13,28 @@ def transaction_hook(phase,index=None):
     """Fault seam for durable intent / shared-writer boundaries."""
 
 
+class CanonicalTargetError(WorkspaceError):
+    """A predictable writer rejection; expose the change ID, never its path."""
+    def __init__(self, code, change_id):
+        self.change_id = change_id
+        super().__init__(code)
+
+
+def preflight_create_targets(changes):
+    """Match canonical new-file roots without restricting legacy update/adoption.
+
+    Run for the entire intent before journaling or applying any part. Profile
+    note_roots remain a scope boundary, not a replacement for writer rules.
+    """
+    for change in changes:
+        action = change['action']
+        source = change['target']['relative_path']
+        if action == 'create_note' and (not source.startswith(('notes/', 'knowledge/')) or not source.endswith('.md')):
+            raise CanonicalTargetError('invalid_create_note_target', change['id'])
+        if action == 'create_task' and (not source.startswith('tasks/') or not source.endswith('.md')):
+            raise CanonicalTargetError('invalid_create_task_target', change['id'])
+
+
 class MemoryIntentService:
     def __init__(self,runtime):
         self.runtime=runtime;self.registry=runtime.registry
@@ -96,6 +118,7 @@ class MemoryIntentService:
         payload_hash=content_hash(canonical_bytes(document));replay=False;parts=[]
         with (nullcontext() if _coordinated else self.registry.coordinated()),request_scope(context['workspace_id'],context['request']['grant_ref']):
             context=self._context(intent)
+            preflight_create_targets(intent['changes'])
             for change in intent['changes']:
                 for evidence in change['evidence_refs']:
                     self.runtime.resolver.read(evidence,context['workspace_id'],context['request']['grant_ref'],audience=context['request']['audience'])

@@ -96,10 +96,6 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         if content_hash(raw) != target_record['source_sha256']:
             raise WorkspaceError('revision_conflict')
         _, body = parse(raw.decode('utf-8'))
-        # The current canonical writer normalizes CRLF and appends a final LF.
-        # Refuse rather than silently modifying user bytes outside our block.
-        if '\r' in body or (body and not body.endswith('\n')):
-            raise WorkspaceError('managed_view_body_preservation_conflict')
     else:
         raw, body = None, ''
     visible_sources = [s for s in snapshot['sources'] if s['id'] in bindings and
@@ -122,7 +118,7 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         reason='Refresh only the managed workspace Markdown block.',
         changes=[dict(id='managed-homepage', action='update_note' if target_record else 'create_note', target=target,
             body=merged, metadata_changes={} if target_record else {'title': profile['name']}, relation_changes=[], evidence_refs=[])]))
-    return service.apply(view_intent, _coordinated=_coordinated, _refresh_views=False)
+    return service.apply(view_intent, _coordinated=_coordinated, _refresh_views=False, _preserve_body=True)
 
 
 def refresh_after_apply(runtime, intent_document, operation_result, *, _coordinated=False):

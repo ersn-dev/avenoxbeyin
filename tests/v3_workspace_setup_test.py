@@ -10,7 +10,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'template/.claude/scripts'))
 import beyin_v3_workspace_setup as setup
-from beyin_v3_workspace_views import merge_block, refresh_after_apply
+from beyin_v3_workspace_views import merge_block, refresh_after_apply, organize
+from beyin_v3_sync import SyncEngine, parse, render
 from beyin_v3_workspaces import LocalAuthority, Registry, WorkspaceError, envelope, validate_document
 from beyin_v3_builder import provisioner
 from beyin_v3_workspace_context import WorkspaceRuntime
@@ -69,6 +70,10 @@ class SetupTest(unittest.TestCase):
             permissions=permissions, evidence='Explicit synthetic scope approval')
         authority.approve_plan(data['plan'], evidence='Explicit synthetic exact plan approval')
         provisioner(self.vault, self.state).apply(data['plan'], 'setup')
+        second = copy.deepcopy(self.payload); second['workspace_id'] = 'another'
+        next_result, next_code = setup.execute(self.vault, self.state, 'prepare', second)
+        self.assertEqual(next_code, 0)
+        self.assertNotEqual(artifacts(next_result)['plan']['data']['snapshot_sha256'], data['plan']['data']['snapshot_sha256'])
         runtime = WorkspaceRuntime(self.vault, self.state, readers={})
         request = envelope('RequestContext', dict(request_id='request', session_id='synthetic', client='test', query='İşler',
             grant_ref='setup-review', audience='internal', no_memory=False, budget_chars=10000,
@@ -88,6 +93,28 @@ class SetupTest(unittest.TestCase):
         self.assertIn('[Örnek iş](item.md)', page.read_text())
         before = page.read_bytes()
         refresh_after_apply(runtime, intent, result)
+        self.assertEqual(page.read_bytes(), before)
+        # Existing user body includes CRLF and a final suffix without LF.
+        metadata, managed = parse(page.read_bytes().decode('utf-8'))
+        user_body = 'Üst kullanıcı\r\n' + managed.rstrip('\n') + '\r\nAlt kullanıcı'
+        page.write_bytes(render(metadata, user_body).encode('utf-8'))
+        # Change a listed record so this exercises canonical update, not no-op.
+        item_path = self.vault / 'notes/workspaces/item.md'
+        item_metadata, item_body = parse(item_path.read_bytes().decode('utf-8'))
+        item_metadata['title'] = 'Yenilenen iş'
+        item_path.write_bytes(render(item_metadata, item_body).encode('utf-8'))
+        SyncEngine(self.vault, self.state).sync()
+        organize(runtime, intent, 'refresh-user-body')
+        _, updated_body = parse(page.read_bytes().decode('utf-8'))
+        self.assertIn('Yenilenen iş', updated_body)
+        self.assertTrue(updated_body.startswith('Üst kullanıcı\r\n'))
+        self.assertTrue(updated_body.endswith('\r\nAlt kullanıcı'))
+        # Duplicate markers never overwrite the existing page.
+        metadata, current_body = parse(page.read_bytes().decode('utf-8'))
+        page.write_bytes(render(metadata, current_body + current_body).encode('utf-8'))
+        SyncEngine(self.vault, self.state).sync(); before = page.read_bytes()
+        with self.assertRaisesRegex(WorkspaceError, 'managed_view_marker_conflict'):
+            organize(runtime, intent, 'refresh-duplicate')
         self.assertEqual(page.read_bytes(), before)
         authority.revoke('setup-review')
         denied = refresh_after_apply(runtime, intent, result)

@@ -80,13 +80,20 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         and s['id'] in bindings and Path(bindings[s['id']]['locator']) == runtime.registry.vault), None)
     if vault_source is None:
         raise WorkspaceError('source_unbound')
+    target_record = next((r for r in runtime.store._records() if r['source'] == homepage), None)
+    # Authorize this exact destination before reading its body, even when the
+    # original successful intent modified a different source/record.
+    runtime.resolver.resolve(wid, vault_source, homepage, context['request']['grant_ref'],
+        access='write_memory', audience=context['request']['audience'])
+    if path.exists():
+        runtime.resolver.resolve(wid, vault_source, homepage, context['request']['grant_ref'],
+            access='read', audience=context['request']['audience'])
     with request_scope(wid, context['request']['grant_ref']):
         records, stale_count = runtime.store._eligible(context['request']['audience'])
     if stale_count:
         raise WorkspaceError('stale_source')
     records = [r for r in records if wid in scope_ids(runtime.registry, r) and r['source'] != homepage
                and not r.get('generated') and r.get('kind') != 'receipt']
-    target_record = next((r for r in runtime.store._records() if r['source'] == homepage), None)
     if path.exists():
         if target_record is None or wid not in scope_ids(runtime.registry, target_record):
             raise WorkspaceError('managed_view_adoption_required')
@@ -106,7 +113,8 @@ def organize(runtime, intent_document, idempotency_key, *, _coordinated=False):
         raise WorkspaceError('managed_view_body_preservation_conflict')
     if merged == body:
         return envelope('OperationResult', dict(operation_id='workspace-view', operation_status='replayed',
-            workspace_health='verification_pending', parts=[], capabilities=[], verification=[], issues=[],
+            workspace_health='verification_pending', parts=[{'id': 'managed-homepage', 'state': 'verified'}], capabilities=[],
+            verification=[{'check': 'source_index_readback', 'state': 'passed', 'evidence_refs': []}], issues=[],
             next_action='Verify retrieval in a fresh session.'))
     target = dict(record_id=target_record['id'] if target_record else 'workspace-home-' + content_hash(wid)[:24],
         source_id=vault_source, relative_path=homepage,
@@ -138,6 +146,10 @@ def refresh_after_apply(runtime, intent_document, operation_result, *, _coordina
         if any(c['target']['relative_path'] == homepage for c in intent['changes']):
             return result
         refreshed = organize(runtime, intent_document, 'view:' + intent['idempotency_key'], _coordinated=_coordinated)
+        validate_document(refreshed)
+        if refreshed['data']['operation_status'] not in ('applied', 'replayed') or any(
+                p['state'] not in ('verified', 'skipped') for p in refreshed['data']['parts']):
+            raise WorkspaceError('managed_view_verification_pending')
         result['data']['parts'] = [p for p in result['data']['parts'] if p['id'] != 'managed-homepage']
         result['data']['parts'].append({'id': 'managed-homepage', 'state': 'verified'})
         result['data']['issues'] = [i for i in result['data']['issues'] if i['code'] != 'managed_view_stale']

@@ -42,6 +42,11 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(data['homepage'], 'notes/workspaces/sample.md')
         self.assertEqual(list(self.vault.iterdir()), [])
         self.assertFalse(self.state.exists())
+        custom = dict(self.payload, homepage='notes/project/home.md')
+        result, code = setup.execute(self.vault, self.state, 'prepare', custom)
+        self.assertEqual(code, 0)
+        self.assertEqual(artifacts(result)['spec']['data']['desired_profile']['note_roots'], ['notes/project'])
+        self.assertFalse(self.state.exists())
         with self.assertRaises(WorkspaceError):
             provisioner(self.vault, self.state).apply(data['plan'], 'unapproved')
 
@@ -104,7 +109,11 @@ class SetupTest(unittest.TestCase):
         item_metadata['title'] = 'Yenilenen iş'
         item_path.write_bytes(render(item_metadata, item_body).encode('utf-8'))
         SyncEngine(self.vault, self.state).sync()
-        organize(runtime, intent, 'refresh-user-body')
+        with patch.object(runtime.resolver, 'resolve', wraps=runtime.resolver.resolve) as resolve:
+            organize(runtime, intent, 'refresh-user-body')
+        self.assertEqual(resolve.call_args_list[0].kwargs['access'], 'write_memory')
+        self.assertEqual(resolve.call_args_list[1].kwargs['access'], 'read')
+        self.assertEqual(resolve.call_args_list[0].args[2], data['homepage'])
         _, updated_body = parse(page.read_bytes().decode('utf-8'))
         self.assertIn('Yenilenen iş', updated_body)
         self.assertTrue(updated_body.startswith('Üst kullanıcı\r\n'))

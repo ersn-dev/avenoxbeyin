@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 
@@ -115,13 +116,27 @@ def _prepare(vault, state, payload):
             memory_policy={'prefer_update_existing': True, 'new_note': 'distinct_only', 'automatic_learning': 'enabled'},
             access_policy={'cross_workspace': 'explicit_grant', 'external_sources': 'read_only', 'automatic_audience': 'internal'},
             record_types=[], relation_types=[], workflows=[], extensions={})
+    is_new = profile['revision'] == 0
     profile = copy.deepcopy(profile)
     old = copy.deepcopy(profile)
     homepage = payload.get('homepage', profile['extensions'].get('setup_homepage', 'notes/workspaces/' + wid + '.md'))
     safe_path(Path(vault), homepage)
     profile.update(name=payload['name'], purpose=payload['purpose'])
+    unresolved = []
     if 'note_roots' in payload:
         profile['note_roots'] = payload['note_roots']
+    elif 'homepage' in payload:
+        parent = posixpath.dirname(homepage)
+        if not parent:
+            raise WorkspaceError('invalid_homepage_note_root')
+        if is_new:
+            # The explicitly requested page's narrowest directory is visible
+            # in the exact profile plan; no authority record is created here.
+            profile['note_roots'] = [parent]
+        elif not any(homepage.startswith(r.rstrip('/') + '/') for r in profile['note_roots']):
+            unresolved.append('homepage_note_root_review:' + parent)
+    if safe_path(Path(vault), homepage).exists():
+        unresolved.append('homepage_scope_adoption_review')
     profile['extensions']['setup_homepage'] = homepage
     requested = [(Path(vault).resolve(), 'Workspace memory')] + roots
     sources, requests, ids = [], [], []
@@ -151,7 +166,7 @@ def _prepare(vault, state, payload):
         profile['revision'] += 1
     spec = envelope('WorkspaceSpec', dict(spec_id='setup-' + content_hash(wid)[:24], user_goal=payload['purpose'],
         desired_profile=profile, sources=sources, binding_requests=requests, adopt_record_refs=[],
-        required_capabilities=[], unresolved=[], authority_ref=authority))
+        required_capabilities=[], unresolved=unresolved, authority_ref=authority))
     validate_document(spec)
     document, preview = plan(vault, state, spec, registry_id=registry_id, capabilities={})
     return _result(dict(spec=spec, plan=document, preview=preview, homepage=homepage))

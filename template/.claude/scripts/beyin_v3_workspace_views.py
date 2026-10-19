@@ -85,7 +85,10 @@ def initialize(runtime, request_document, idempotency_key, *, before_apply=None)
     request = request_document['data']
     if request['no_memory']:
         raise WorkspaceError('no_memory')
-    resolved = runtime.context(request_document)['data']
+    # Homepage links are based on canonical vault records and approved source
+    # labels, not extracted external-document contents. Keep normal query
+    # contexts unchanged; the canonical writer still rechecks live authority.
+    resolved = runtime.context(request_document, include_external_sources=False)['data']
     if resolved['state'] not in ('ready', 'partial') or resolved['workspace_id'] is None:
         raise WorkspaceError('workspace_context_required')
     context = dict(request=request, workspace_id=resolved['workspace_id'])

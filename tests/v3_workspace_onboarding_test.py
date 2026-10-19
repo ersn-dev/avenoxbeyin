@@ -96,6 +96,38 @@ class OnboardingTest(unittest.TestCase):
         self.assertEqual(code, 5, again); self.assertTrue(artifacts(again)['homepage_verified'])
         self.assertEqual(page.read_bytes(), before)
 
+    def test_homepage_skips_external_content_but_normal_context_reads_it(self):
+        # The setup homepage lists approved source labels, not extracted
+        # excerpts. Normal user retrieval must still read those sources.
+        (self.external / 'searchable.txt').write_text(
+            'Independent synthetic external evidence', encoding='utf-8')
+        staged, saved = self.stage(); self.approve(saved)
+        with patch('beyin_v3_sources.SourceResolver.files',
+                   side_effect=AssertionError('homepage enumerated external files')) as files, \
+             patch('beyin_v3_sources.SourceResolver.extract',
+                   side_effect=AssertionError('homepage extracted external bytes')) as extract:
+            result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+        self.assertTrue(artifacts(result)['homepage_verified'])
+        files.assert_not_called()
+        extract.assert_not_called()
+        homepage = self.vault / staged['scope']['homepage']
+        self.assertIn('Programlar', homepage.read_text(encoding='utf-8'))
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        request = self.request()
+        request['data']['query'] = 'Independent synthetic external evidence'
+        context = runtime.context(request)['data']
+        self.assertEqual(context['state'], 'ready')
+        self.assertTrue(any(
+            record['kind'] == 'source' and 'Independent synthetic external evidence' in record['text']
+            for record in context['records']), context)
+
+        # Skipping external extraction must not bypass authority revocation.
+        LocalAuthority(Registry(self.vault, self.state)).revoke('setup-review')
+        with self.assertRaisesRegex(WorkspaceError, 'workspace_context_required'):
+            initialize(runtime, request, 'revoked-homepage')
+
     def test_page_failure_preserves_config_and_resumes_without_reapplying(self):
         staged, saved = self.stage(); self.approve(saved)
         with patch('beyin_v3_workspace_views.initialize', side_effect=WorkspaceError('managed_view_adoption_required')):

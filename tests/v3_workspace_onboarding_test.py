@@ -107,8 +107,11 @@ class OnboardingTest(unittest.TestCase):
              patch('beyin_v3_sources.SourceResolver.extract',
                    side_effect=AssertionError('homepage extracted external bytes')) as extract:
             result, code = self.complete(staged)
+            replay, replay_code = self.complete(staged)
         self.assertEqual(code, 5, result)
+        self.assertEqual(replay_code, 5, replay)
         self.assertTrue(artifacts(result)['homepage_verified'])
+        self.assertTrue(artifacts(replay)['homepage_verified'])
         files.assert_not_called()
         extract.assert_not_called()
         homepage = self.vault / staged['scope']['homepage']

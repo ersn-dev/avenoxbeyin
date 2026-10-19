@@ -131,6 +131,8 @@ class OnboardingTest(unittest.TestCase):
         request = self.request()
         request['data']['request_id'] = 'revocation-after-batch'
         calls = [0]
+        token_dir = self.state / 'workspace-contexts'
+        tokens_before = set(token_dir.iterdir()) if token_dir.exists() else set()
         def revoke_after_scan(*args, **kwargs):
             result = original(*args, **kwargs)
             calls[0] += 1
@@ -140,8 +142,26 @@ class OnboardingTest(unittest.TestCase):
             with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
                 runtime.context(request, include_external_sources=False)
         self.assertEqual(calls, [1])
-        self.assertFalse((self.state / 'workspace-contexts').joinpath(
-            'revocation-after-batch.json').exists())
+        self.assertEqual(set(token_dir.iterdir()) if token_dir.exists() else set(), tokens_before)
+
+    def test_revocation_during_homepage_scan_denies_replay(self):
+        staged, saved = self.stage(); self.approve(saved)
+        result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        original = runtime.store._eligible
+        calls = [0]
+        def revoke_during_homepage(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls[0] += 1
+            if calls[0] == 2:
+                LocalAuthority(runtime.registry).revoke('setup-review')
+            return result
+        with patch.object(runtime.store, '_eligible', revoke_during_homepage):
+            with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                initialize(runtime, self.request(), 'revoked-replay')
+        self.assertEqual(calls, [2])
 
     def test_homepage_skips_external_content_but_normal_context_reads_it(self):
         # The setup homepage lists approved source labels, not extracted

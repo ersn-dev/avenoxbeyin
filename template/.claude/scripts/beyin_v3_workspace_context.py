@@ -10,6 +10,8 @@ from beyin_v3_workspaces import (Registry,LocalAuthority,WorkspaceError,canonica
 from beyin_v3_sources import SourceResolver
 
 CURRENT=ContextVar('beyin_workspace_request',default=None)
+# Reused only while one trusted store._eligible() call checks canonical records.
+_RECORD_POLICY=ContextVar('beyin_workspace_record_policy',default=None)
 
 
 def enabled(vault,state):
@@ -32,6 +34,17 @@ def scope_ids(registry,record):
 
 def record_allowed(store,record,audience='internal'):
     current=CURRENT.get()
+    policy=_RECORD_POLICY.get()
+    # The pre-authorized policy belongs to exactly one synchronous eligibility
+    # scan. Do not change standalone request_scope() or other retrieval paths.
+    if (policy is not None and current is not None and
+            policy['workspace_id']==current['workspace_id'] and
+            policy['grant_ref']==current['grant_ref'] and
+            policy['include_archived']==current.get('include_archived',False) and
+            policy['audience']==audience and
+            policy['registry'].vault==store.vault_root and
+            policy['registry'].state==store.state_dir):
+        return policy['allowed'] and current['workspace_id'] in scope_ids(policy['registry'],record)
     if not enabled(store.vault_root,store.state_dir) and current is None:return True
     if not current:return False
     registry=Registry(store.vault_root,store.state_dir)
@@ -53,6 +66,34 @@ def request_scope(workspace_id,grant_ref,*,include_archived=False):
     token=CURRENT.set({'workspace_id':workspace_id,'grant_ref':grant_ref,'include_archived':bool(include_archived)})
     try:yield
     finally:CURRENT.reset(token)
+
+
+@contextmanager
+def authorized_record_scope(registry,snapshot,bindings,workspace_id,grant_ref,*,audience='internal',include_archived=False):
+    """Batch record policy, limited to a single synchronous eligibility scan.
+
+    No approval is synthesized or persisted. Fresh snapshot, binding, and grant
+    checks are still required before context delivery / canonical writes.
+    Standalone request_scope() continues checking authority per record.
+    """
+    profile=next((p for p in (snapshot or {}).get('profiles',[]) if p['id']==workspace_id),None)
+    allowed=False
+    if (profile is not None and
+            (profile['lifecycle']=='active' or (include_archived and profile['lifecycle']=='archived'))):
+        authority=LocalAuthority(registry)
+        for source in snapshot['sources']:
+            if source['kind']!='vault' or source['id'] not in profile['source_ids']:continue
+            binding=bindings.get(source['id'])
+            if (binding and local_root_matches(binding['locator'],registry.vault) and
+                    authority.allows(grant_ref,binding,workspace_id,audience=audience)):
+                allowed=True
+                break
+    policy=dict(registry=registry,workspace_id=workspace_id,grant_ref=grant_ref,
+                include_archived=bool(include_archived),audience=audience,allowed=allowed)
+    with request_scope(workspace_id,grant_ref,include_archived=include_archived):
+        token=_RECORD_POLICY.set(policy)
+        try:yield
+        finally:_RECORD_POLICY.reset(token)
 
 
 class WorkspaceRuntime:
@@ -145,7 +186,8 @@ class WorkspaceRuntime:
         wid=selected.pop();profile=candidates[wid];result['workspace_id']=wid;result['profile_revision']=profile['revision']
         from beyin_v3 import _tokens,STOPWORDS
         terms=_tokens(request['query'])-STOPWORDS
-        with request_scope(wid,request['grant_ref'],include_archived=include_archived):
+        with authorized_record_scope(self.registry,snapshot,bindings,wid,request['grant_ref'],
+                                     audience=request['audience'],include_archived=include_archived):
             eligible,_=self.store._eligible(request['audience'])
         if not include_archived:
             from beyin_v3 import RETIRED_STATUSES,_status_word
@@ -217,8 +259,18 @@ class WorkspaceRuntime:
             relations=[r for r in relations if r['from']['record_id'] in {x['id'] for x in records} and r['to']['record_id'] in {x['id'] for x in records}],
             rules=[r for r in profile['working_rules'] if not r['subject_refs'] or any(x['workspace_id']==wid and x['record_id'] in selected_ids for x in r['subject_refs'])])
         if result['issues']:result['state']='partial'
-        if self.registry.snapshot()['snapshot_sha256']!=snapshot['snapshot_sha256'] or self.registry.bindings()[1]!=binding_hash:
+        fresh=self.registry.snapshot()
+        if fresh['snapshot_sha256']!=snapshot['snapshot_sha256']:
             raise WorkspaceError('snapshot_changed')
+        fresh_bindings,fresh_hash=self.registry.bindings(fresh)
+        if fresh_hash!=binding_hash:
+            raise WorkspaceError('snapshot_changed')
+        # Grants can be revoked independently of the registry and binding
+        # digests. The batched record-policy must never mint a stale token.
+        if not any(source_id in profile['source_ids'] and
+                self.authority.allows(request['grant_ref'],binding,wid,audience=request['audience'])
+                for source_id,binding in fresh_bindings.items()):
+            raise WorkspaceError('scope_denied')
         for source in sources:self.resolver.read(source,wid,request['grant_ref'],audience=request['audience'],archived=include_archived)
         if request['no_memory'] or self.read_only:
             result['context_token']='no-memory'

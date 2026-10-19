@@ -5,7 +5,7 @@ from urllib.parse import quote
 from pathlib import Path
 
 from beyin_v3_workspaces import WorkspaceError, content_hash, envelope, safe_path, validate_document, local_root_matches
-from beyin_v3_workspace_context import request_scope, scope_ids
+from beyin_v3_workspace_context import authorized_record_scope, scope_ids
 from beyin_v3_workspace_memory import MemoryIntentService
 from beyin_v3_sync import parse
 
@@ -118,7 +118,10 @@ def _organize_context(runtime, context, context_token, idempotency_key, *, _coor
     if path.exists():
         runtime.resolver.resolve(wid, vault_source, homepage, context['request']['grant_ref'],
             access='read', audience=context['request']['audience'])
-    with request_scope(wid, context['request']['grant_ref']):
+    # Cache the previously validated vault policy only for this eligibility
+    # scan; the canonical writer still validates live grants before writing.
+    with authorized_record_scope(runtime.registry,snapshot,bindings,wid,context['request']['grant_ref'],
+                                 audience='internal'):
         # The shared homepage is internal even for an explicitly private request.
         records, stale_count = runtime.store._eligible('internal')
     if stale_count:

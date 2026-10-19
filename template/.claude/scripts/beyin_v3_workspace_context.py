@@ -122,7 +122,12 @@ class WorkspaceRuntime:
             profile_revision=None,snapshot_sha256=snapshot['snapshot_sha256'],binding_snapshot_sha256=bindings_hash,
             subject_refs=[],rules=[],records=[],relations=[],source_refs=[],missing_facts=[],issues=[])
 
-    def context(self,document,*,include_archived=False):
+    def context(self,document,*,include_archived=False,include_external_sources=True):
+        """Resolve context; managed homepage setup may omit external excerpts.
+
+        Normal retrieval includes external sources. The managed homepage only
+        needs a scoped canonical-note view and a freshly validated write token.
+        """
         validate_document(document)
         if document['type']!='RequestContext':raise WorkspaceError('invalid_schema')
         request=document['data'];snapshot=self.registry.snapshot()
@@ -188,7 +193,9 @@ class WorkspaceRuntime:
             if 'due_at' in projected:projected['due_at']=projected['due_at'][:10]
             validate_document(envelope('Record',projected));records.append(projected);sources.append(sr);remaining-=len(text)
             result['missing_facts'].extend(id+'.'+k for k,v in flat.items() if v is None)
-        for descriptor in snapshot['sources']:
+        # Homepage initialization renders only canonical vault notes and source
+        # labels. Avoid parsing unrelated external documents just to build it.
+        for descriptor in (snapshot['sources'] if include_external_sources else ()):
             if descriptor['kind']=='vault' or descriptor['id'] not in profile['source_ids'] or remaining<=0:continue
             try:
                 names=self.resolver.files(wid,descriptor['id'],request['grant_ref'],audience=request['audience'],archived=include_archived)

@@ -96,6 +96,53 @@ class OnboardingTest(unittest.TestCase):
         self.assertEqual(code, 5, again); self.assertTrue(artifacts(again)['homepage_verified'])
         self.assertEqual(page.read_bytes(), before)
 
+    def test_homepage_batches_registry_reads_for_many_canonical_notes(self):
+        notes = self.vault / 'notes' / 'bench'
+        notes.mkdir(parents=True)
+        for index in range(40):
+            name = 'synthetic-%02d' % index
+            (notes / (name + '.md')).write_bytes(render(dict(
+                id=name, kind='note', revision=1, workspace_id='fitness',
+                visibility='internal', title='Synthetic ' + str(index)),
+                'Canonical synthetic body').encode('utf-8'))
+        SyncEngine(self.vault, self.state).sync()
+        staged, saved = self.stage(); self.approve(saved)
+
+        snapshot = Registry.snapshot
+        counts = [0]
+        def count_snapshot(registry, *args, **kwargs):
+            counts[0] += 1
+            return snapshot(registry, *args, **kwargs)
+        with patch.object(Registry, 'snapshot', count_snapshot):
+            result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+        self.assertTrue(artifacts(result)['homepage_verified'])
+        self.assertLess(counts[0], 50, 'registry should not be read for each canonical record')
+        self.assertIn('Synthetic 0', (self.vault / staged['scope']['homepage']).read_text(encoding='utf-8'))
+
+    def test_grant_revoked_after_batched_eligibility_does_not_mint_context(self):
+        staged, saved = self.stage(); self.approve(saved)
+        result, code = self.complete(staged)
+        self.assertEqual(code, 5, result)
+
+        runtime = WorkspaceRuntime(self.vault, self.state, readers={})
+        authority = LocalAuthority(runtime.registry)
+        original = runtime.store._eligible
+        request = self.request()
+        request['data']['request_id'] = 'revocation-after-batch'
+        calls = [0]
+        def revoke_after_scan(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls[0] += 1
+            authority.revoke('setup-review')
+            return result
+        with patch.object(runtime.store, '_eligible', revoke_after_scan):
+            with self.assertRaisesRegex(WorkspaceError, 'scope_denied'):
+                runtime.context(request, include_external_sources=False)
+        self.assertEqual(calls, [1])
+        self.assertFalse((self.state / 'workspace-contexts').joinpath(
+            'revocation-after-batch.json').exists())
+
     def test_homepage_skips_external_content_but_normal_context_reads_it(self):
         # The setup homepage lists approved source labels, not extracted
         # excerpts. Normal user retrieval must still read those sources.

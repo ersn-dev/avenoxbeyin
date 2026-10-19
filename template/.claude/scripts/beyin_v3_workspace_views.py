@@ -126,6 +126,16 @@ def _organize_context(runtime, context, context_token, idempotency_key, *, _coor
         records, stale_count = runtime.store._eligible('internal')
     if stale_count:
         raise WorkspaceError('stale_source')
+    # A grant or registry update during the batched scan must fail closed,
+    # including when the managed block is already unchanged (replay path).
+    fresh = runtime.registry.snapshot()
+    if fresh['snapshot_sha256'] != snapshot['snapshot_sha256']:
+        raise WorkspaceError('snapshot_changed')
+    if runtime.registry.bindings(fresh)[1] != binding_hash:
+        raise WorkspaceError('snapshot_changed')
+    if not runtime.authority.allows(context['request']['grant_ref'], bindings[vault_source], wid,
+                                    access='read', audience='internal'):
+        raise WorkspaceError('scope_denied')
     records = [r for r in records if wid in scope_ids(runtime.registry, r) and r['source'] != homepage
                and not r.get('generated') and r.get('kind') != 'receipt']
     if path.exists():

@@ -9,6 +9,7 @@ on:
       - 'tests/v3_workspace_onboarding_test.py'
       - 'template/.claude/scripts/beyin_v3_workspace_context.py'
       - 'template/.claude/scripts/beyin_v3_workspace_views.py'
+      - 'template/.claude/scripts/beyin_v3_workspace_onboarding.py'
   workflow_dispatch:
 
 permissions:

@@ -59,6 +59,18 @@ class LineEndingGateTest(unittest.TestCase):
                 path.write_bytes(source.read_bytes())
                 self.saved[path] = self.stamp(path)
 
+    def restore_verified_target(self, name):
+        """Restore only the deliberate mutation after verifying the gate wrote nothing.
+
+        The full-tree before/after comparison still runs before calling this;
+        unexpected gate writes take the original full restore path.
+        """
+        path = self.vault / name
+        baseline = self.snapshot / 'vault' / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(baseline.read_bytes())
+        self.saved[path] = self.stamp(path)
+
     @staticmethod
     def stamp(path):
         stat = path.stat()
@@ -117,13 +129,20 @@ class LineEndingGateTest(unittest.TestCase):
                     with self.subTest(file=name, case=case, gate=gate):
                         self.mutate(name, case)
                         before = self.fingerprint()
+                        verified_no_writes = False
                         try:
                             with self.assertRaises(ValueError):
                                 run()
-                            # A conflict must stop the gate before it writes anything.
+                            # Keep this full-tree check; it guards all unrelated
+                            # paths and ensures conflicts never have side effects.
                             self.assertEqual(self.fingerprint(), before)
+                            verified_no_writes = True
                         finally:
-                            self.restore()
+                            if verified_no_writes:
+                                # Only the test's own deliberate edit remains.
+                                self.restore_verified_target(name)
+                            else:
+                                self.restore()
 
     def test_conflict_message_names_the_case(self):
         target = '.claude/scripts/beyin_v3_hook.py'

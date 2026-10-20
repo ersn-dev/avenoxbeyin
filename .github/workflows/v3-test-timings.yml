@@ -1,0 +1,49 @@
+name: V3 per-test timing diagnostics
+
+on:
+  push:
+    branches: ['perf/workspace-setup-github-actions']
+    paths:
+      - '.github/workflows/v3-test-timings.yml'
+      - 'tests/profile_v3_unittests.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-suite-timings:
+    name: full suite / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 40 || 25 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.11'
+          - os: windows-latest
+            python: '3.13'
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run complete unsharded suite and record every test duration
+        run: python tests/profile_v3_unittests.py --output v3-test-timings.jsonl
+      - name: Upload full per-test timing evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: v3-test-timings-${{ matrix.os }}-py${{ matrix.python }}
+          path: v3-test-timings.jsonl
+          if-no-files-found: warn
+          retention-days: 14

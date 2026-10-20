@@ -1,0 +1,61 @@
+name: Windows line-ending test cost comparison
+
+on:
+  push:
+    branches: ['perf/workspace-setup-github-actions']
+    paths:
+      - 'tests/v3_line_endings_test.py'
+      - '.github/workflows/line-ending-timings.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: e8e708757677f7448d17e5481e51f0fb8d7cbcae
+          path: baseline
+          persist-credentials: false
+      - name: Baseline - unchanged exhaustive conflict test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import subprocess, sys, time
+          from pathlib import Path
+          start = time.perf_counter()
+          proc = subprocess.run([sys.executable, '-m', 'unittest',
+              'tests.v3_line_endings_test.LineEndingGateTest.test_real_change_still_conflicts_on_every_gate'],
+              cwd='baseline')
+          print(f'BASELINE_SECONDS={time.perf_counter()-start:.3f}', flush=True)
+          sys.exit(proc.returncode)
+          PY
+      - name: Candidate - same exhaustive conflict test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import subprocess, sys, time
+          start = time.perf_counter()
+          proc = subprocess.run([sys.executable, '-m', 'unittest',
+              'tests.v3_line_endings_test.LineEndingGateTest.test_real_change_still_conflicts_on_every_gate'])
+          print(f'CANDIDATE_SECONDS={time.perf_counter()-start:.3f}', flush=True)
+          sys.exit(proc.returncode)
+          PY

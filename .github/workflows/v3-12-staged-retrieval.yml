@@ -1,0 +1,113 @@
+name: V3.12 staged retrieval (fork evidence)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/v3-12-staged-retrieval.yml"
+      - "scripts/evaluate_v3_staged_retrieval.py"
+  push:
+    branches: ["experiment/v3-12-staged-retrieval"]
+    paths:
+      - ".github/workflows/v3-12-staged-retrieval.yml"
+      - "scripts/evaluate_v3_staged_retrieval.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-evidence:
+    name: ${{ matrix.source }} / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        source: ["fork-3.11", "upstream-3.12"]
+        python: ["3.11", "3.13"]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONIOENCODING: utf-8
+      BEYIN_V3_NO_SPAWN: "1"
+    steps:
+      - name: Checkout personal fork (test tooling)
+        uses: actions/checkout@v4
+        with:
+          path: fork
+          persist-credentials: false
+
+      - name: Checkout official V3.12.0 release
+        uses: actions/checkout@v4
+        with:
+          repository: avenoxai/avenoxbeyin
+          ref: v3.12.0
+          path: upstream
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Evaluate selected code version
+        env:
+          TARGET: ${{ matrix.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          if [ "$TARGET" = "upstream-3.12" ]; then
+            cp fork/scripts/evaluate_v3_staged_retrieval.py upstream/scripts/
+            cd upstream
+            test "$(cat VERSION)" = "3.12.0"
+          else
+            cd fork
+            test "$(cat VERSION)" = "3.11.0"
+          fi
+
+          python -m unittest discover -s tests -p "v3_passage_test.py"
+          python scripts/evaluate_v3.py > "../evidence/semantic.json"
+          python scripts/evaluate_v3_passages.py --seed 83 --budgets 2000 5000 > "../evidence/baseline.json"
+          python scripts/evaluate_v3_staged_retrieval.py --seed 83 --output "../evidence/staged.json"
+          git rev-parse HEAD > "../evidence/source-commit.txt"
+          printf "%s\n" "$TARGET" > "../evidence/source-label.txt"
+
+      - name: Human-readable evaluation summary
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path("evidence/staged.json")
+          if path.exists():
+              r = json.loads(path.read_text(encoding="utf-8"))
+              lines = [
+                  f"## Staged retrieval on V{r['source_version']}",
+                  f"Labelled questions: {r['questions']} (short/long; synthetic)",
+                  f"Cross-block diagnostic recovered: {r['diagnostic']['recovered']}",
+                  "",
+                  "| Budget | Shape | Initial answer | Open initial source | Second-search potential upper bound |",
+                  "|---:|---|---:|---:|---:|",
+              ]
+              for budget, data in r["budgets"].items():
+                  for shape, row in data["questions"].items():
+                      n = row["count"]
+                      lines.append(f"| {budget} | {shape} | {row['initial_answer']}/{n} | "
+                                   f"{row['opened_source_answer']}/{n} | "
+                                   f"{row['stage2_potential_answer']}/{n} |")
+              lines += ["", "Second search is a recoverability upper bound, NOT measured agent answer accuracy.",
+                        "Source access remains bounded by the existing retrieval eligibility rules."]
+          else:
+              lines = ["Staged evaluation did not produce a report. Inspect the failed step."]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-${{ matrix.source }}-python-${{ matrix.python }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn

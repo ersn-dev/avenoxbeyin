@@ -96,6 +96,12 @@ def main():
     args = parser.parse_args()
 
     tests_dir = Path(__file__).resolve().parent
+    # A script executed from tests/ lacks the repository root on sys.path.
+    # unittest -m discovery does have it; preserve the original imports.
+    root = str(tests_dir.parent)
+    if root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 

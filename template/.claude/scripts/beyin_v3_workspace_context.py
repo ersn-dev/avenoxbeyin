@@ -37,7 +37,7 @@ def record_allowed(store,record,audience='internal'):
     policy=_RECORD_POLICY.get()
     # The pre-authorized policy belongs to exactly one synchronous eligibility
     # scan. Do not change standalone request_scope() or other retrieval paths.
-    if (policy is not None and current is not None and
+    if (policy is not None and current is policy['request_scope'] and
             policy['workspace_id']==current['workspace_id'] and
             policy['grant_ref']==current['grant_ref'] and
             policy['include_archived']==current.get('include_archived',False) and
@@ -91,6 +91,9 @@ def authorized_record_scope(registry,snapshot,bindings,workspace_id,grant_ref,*,
     policy=dict(registry=registry,workspace_id=workspace_id,grant_ref=grant_ref,
                 include_archived=bool(include_archived),audience=audience,allowed=allowed)
     with request_scope(workspace_id,grant_ref,include_archived=include_archived):
+        # A nested standalone scope must perform its own live grant checks, even
+        # when its workspace/grant values happen to match this batch.
+        policy['request_scope']=CURRENT.get()
         token=_RECORD_POLICY.set(policy)
         try:yield
         finally:_RECORD_POLICY.reset(token)
